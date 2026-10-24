@@ -181,7 +181,7 @@ describe('handleActualApiRequest GET redaction', () => {
 
     const onSuccess = vi.fn();
     const aiManager = { history: [] as Array<{ content: string }> };
-    await handleActualApiRequest(
+    const result = await handleActualApiRequest(
       '/api/v1/namespaces/default/pods/my-pod/log',
       'GET',
       '',
@@ -192,6 +192,11 @@ describe('handleActualApiRequest GET redaction', () => {
       undefined,
       onSuccess
     );
+
+    expect(result).toContain('starting server');
+    expect(result).not.toContain('hunter2');
+    expect(result).not.toContain('abc123xyz');
+    expect(result).toContain('[REDACTED]');
 
     const historyContent = aiManager.history.map(entry => entry.content).join('\n');
     expect(historyContent).toContain('LOGS_BUTTON:');
@@ -204,5 +209,57 @@ describe('handleActualApiRequest GET redaction', () => {
     expect(callbackPayload).not.toContain('hunter2');
     expect(callbackPayload).not.toContain('abc123xyz');
     expect(callbackPayload).toContain('[REDACTED]');
+  });
+
+  it('returns a bounded tail of logs for large log outputs', async () => {
+    mocks.isLogRequest.mockReturnValue(true);
+    const manyLines = Array.from({ length: 150 }, (_, i) => `log line ${i + 1}`).join('\n');
+    mocks.clusterRequest.mockResolvedValue({
+      text: async () => manyLines,
+    });
+
+    const aiManager = { history: [] as Array<{ content: string }> };
+    const result = await handleActualApiRequest(
+      '/api/v1/namespaces/default/pods/large-pod/log',
+      'GET',
+      '',
+      () => {},
+      aiManager,
+      'large-pod',
+      'Headlamp'
+    );
+
+    expect(result).toContain('... [truncated, showing most recent logs] ...');
+    expect(result).toContain('log line 150');
+    expect(result).not.toContain('log line 1\n');
+
+    // The LOGS_BUTTON entry in history preserves the complete logs for UI inspection
+    const historyEntry = aiManager.history[0]?.content || '';
+    expect(historyEntry).toContain('LOGS_BUTTON:');
+    expect(historyEntry).toContain('log line 1');
+    expect(historyEntry).toContain('log line 150');
+  });
+
+  it('returns localized fallback message when pod logs are empty', async () => {
+    mocks.isLogRequest.mockReturnValue(true);
+    mocks.clusterRequest.mockResolvedValue({
+      text: async () => '',
+    });
+
+    const aiManager = { history: [] as Array<{ content: string }> };
+    const result = await handleActualApiRequest(
+      '/api/v1/namespaces/default/pods/empty-pod/log',
+      'GET',
+      '',
+      () => {},
+      aiManager,
+      'empty-pod',
+      'Headlamp'
+    );
+
+    expect(result).toBe('No logs available for pods "empty-pod" in namespace "default".');
+    expect(aiManager.history[0]?.content).toContain(
+      'No logs available for pods "empty-pod" in namespace "default".'
+    );
   });
 });
